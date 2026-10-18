@@ -1,0 +1,141 @@
+<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>بانک بازی</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--tx:#1c1e21;--mut:#6b7280;--pri:#2563eb;--ok:#16a34a;--bad:#dc2626;--bd:#e5e7eb}
+@media(prefers-color-scheme:dark){:root{--bg:#111318;--card:#1b1e25;--tx:#eceef2;--mut:#9aa3b2;--bd:#2c313c}}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,Tahoma,sans-serif;background:var(--bg);color:var(--tx);padding-bottom:40px}
+nav{display:flex;gap:4px;padding:8px;position:sticky;top:0;background:var(--bg);z-index:5}
+nav button{flex:1;padding:10px 4px;border:0;border-radius:10px;background:var(--card);color:var(--tx);font-size:.95em}
+nav button.on{background:var(--pri);color:#fff}
+main{max-width:520px;margin:auto;padding:0 10px}
+.card{background:var(--card);border-radius:14px;padding:14px;margin:10px 0;box-shadow:0 1px 3px #0002}
+input,select{width:100%;padding:12px;margin:5px 0;font-size:1.05em;border:1px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx)}
+button.b{padding:12px 14px;margin:4px 2px;border:0;border-radius:10px;background:var(--pri);color:#fff;font-size:1em}
+button.g{background:var(--mut)}button.r{background:var(--bad)}
+.big{font-size:2.2em;font-weight:700}.mut{color:var(--mut);font-size:.9em}.in{color:var(--ok)}.out{color:var(--bad)}
+.msg{padding:10px;border-radius:10px;margin:8px 0;background:#2563eb22}.msg.e{background:#dc262622}.msg.s{background:#16a34a22}
+.tx{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bd)}
+table{width:100%;border-collapse:collapse}td{padding:6px 2px;border-bottom:1px solid var(--bd)}
+#pin,.pin{letter-spacing:.5em;text-align:center}
+</style></head><body>
+<nav id="nav"><button data-t="term" class="on">ترمینال</button><button data-t="remote">ورود با شماره</button><button data-t="board">جدول</button><button data-t="admin">ادمین</button></nav>
+<main>
+<section id="term">
+  <div class="card"><b>کارت‌خوان</b>
+    <div class="mut" id="rstat">متصل نیست</div>
+    <button class="b" onclick="connectReader()">اتصال به کارت‌خوان (بلوتوث / USB)</button>
+    <details><summary class="mut">تنظیمات و آزمایش بدون کارت‌خوان</summary>
+      <input id="tk" type="password" placeholder="کلید ترمینال" onchange="localStorage.tk=this.value">
+      <input id="fake" placeholder="شناسه‌ی کارت (مثلاً 04A1B2C3)"><button class="b g" onclick="onUid(fake.value)">شبیه‌سازی تگ</button>
+    </details></div>
+  <div id="tview"></div>
+</section>
+<section id="remote" hidden><div id="rview"></div></section>
+<section id="board" hidden><div class="card"><b>🏆 جدول ثروتمندان</b><div id="bview"></div></div></section>
+<section id="admin" hidden><div id="aview"></div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ERR={wrong_pin:'رمز اشتباه است',locked:'حساب قفل شد؛ از ادمین بخواه باز کند',insufficient:'موجودی کافی نیست',bad_amount:'مبلغ نامعتبر است',
+ same_account:'به خودت نمی‌شود پول داد',no_account:'حساب پیدا نشد',auth:'نشست تمام شد؛ دوباره وارد شو',terminal_auth:'کلید ترمینال اشتباه است',
+ not_configured:'سرور هنوز تنظیم نشده',card_exists:'این کارت قبلاً ثبت شده',bad_name:'نام نامعتبر است',bad_pin_format:'رمز باید ۴ رقم باشد',
+ bad_uid:'شناسه‌ی کارت نامعتبر است',admin_auth:'رمز ادمین اشتباه است',admin_locked:'۳۰ ثانیه صبر کن',too_large:'درخواست خیلی بزرگ است'};
+const fa=e=>ERR[e.message]||('خطا: '+e.message);
+async function api(path,{method='GET',body,token,term}={}){
+  const h={}; if(body)h['Content-Type']='application/json'; if(token)h.Authorization='Bearer '+token; if(term)h['X-Terminal-Key']=localStorage.tk||'';
+  const r=await fetch(path,{method,headers:h,body:body?JSON.stringify(body):undefined});
+  let j={}; try{j=await r.json()}catch(e){} if(!r.ok)throw new Error(j.error||('http_'+r.status)); return j;
+}
+const msg=(el,t,c='')=>{el.innerHTML=t?`<div class="msg ${c}">${esc(t)}</div>`:''};
+// ---------- تب‌ها ----------
+let tab='term';
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;
+  document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));
+  ['term','remote','board','admin'].forEach(t=>$(t).hidden=t!==tab); poll()});
+$('tk').value=localStorage.tk||'';
+// ---------- نمای حساب (مشترک) ----------
+const KIND={open:'افتتاح حساب',out:t=>'ارسال به '+(t.other_name||'#'+t.other),in:t=>'دریافت از '+(t.other_name||'#'+t.other),admin:'تغییر توسط ادمین'};
+function meHtml(m){return `<div class="card"><div class="mut">${esc(m.name)} — شماره حساب ${m.id}</div><div class="big">${m.balance} سکه</div></div>
+ <div class="card"><b>تراکنش‌ها</b>${m.txs.map(t=>{const k=KIND[t.kind];const s=t.kind==='out'?-t.amount:t.amount;
+ return `<div class="tx"><span>${esc(typeof k==='function'?k(t):k)}</span><b class="${s<0?'out':'in'}" dir="ltr">${s>0?'+':''}${s}</b></div>`}).join('')||'<div class="mut">هنوز تراکنشی نیست</div>'}</div>`}
+// ============ ترمینال ============
+const T={state:'idle',token:null,me:null,uid:null,name:null,target:null,timer:null,note:''};
+function tReset(note=''){clearTimeout(T.timer);Object.assign(T,{state:'idle',token:null,me:null,uid:null,name:null,target:null,note});tRender()}
+function tKeep(){clearTimeout(T.timer);if(T.token)T.timer=setTimeout(()=>tReset('به‌خاطر بی‌فعالیتی خارج شدی'),60000)}
+function tRender(){const v=$('tview'),n=T.note?`<div class="msg ${T.noteC||''}">${esc(T.note)}</div>`:'';let h=n;
+ if(T.state==='idle')h+='<div class="card"><b>کارتت را روی کارت‌خوان بگذار 💳</b></div>';
+ if(T.state==='register')h+=`<div class="card"><b>کارت جدید</b><div class="mut">با ثبت‌نام ۱۰۰ سکه هدیه می‌گیری</div>
+   <input id="rn" placeholder="نام" maxlength="20"><input id="rp" class="pin" type="password" inputmode="numeric" maxlength="4" placeholder="رمز ۴ رقمی">
+   <button class="b" onclick="tRegister()">ثبت‌نام</button><button class="b g" onclick="tReset()">لغو</button></div>`;
+ if(T.state==='pin')h+=`<div class="card"><b>سلام ${esc(T.name)}</b><input id="pin" class="pin" type="password" inputmode="numeric" maxlength="4" placeholder="رمز" autofocus>
+   <button class="b" onclick="tLogin()">ورود</button><button class="b g" onclick="tReset()">لغو</button></div>`;
+ if(T.state==='menu'||T.state==='transfer_target'||T.state==='transfer_form'){h+=meHtml(T.me);
+   if(T.state==='menu')h+=`<div class="card"><button class="b" onclick="T.state='transfer_target';T.note='';tKeep();tRender()">💸 کارت به کارت</button><button class="b g" onclick="tLogout()">خروج</button></div>`;
+   if(T.state==='transfer_target')h+=`<div class="card"><b>کارت گیرنده را روی کارت‌خوان بگذار</b><br><button class="b g" onclick="T.state='menu';tRender()">لغو</button></div>`;
+   if(T.state==='transfer_form')h+=`<div class="card"><b>انتقال به ${esc(T.target.name)} (حساب ${T.target.acc})</b>
+     <input id="am" type="number" inputmode="numeric" placeholder="مبلغ"><input id="tp" class="pin" type="password" inputmode="numeric" maxlength="4" placeholder="رمز خودت">
+     <button class="b" onclick="tTransfer()">تأیید و انتقال</button><button class="b g" onclick="T.state='menu';tRender()">لغو</button></div>`}
+ v.innerHTML=h}
+async function onUid(raw){tKeep();const uid=String(raw||'').trim();if(!uid)return;
+ try{
+  if(T.state==='idle'){const r=await api('/api/tap',{method:'POST',body:{uid},term:true});T.uid=uid;T.note='';
+    if(r.known){T.state='pin';T.name=r.name}else T.state='register';tRender()}
+  else if(T.state==='transfer_target'){const r=await api('/api/tap',{method:'POST',body:{uid},term:true});
+    if(!r.known){T.note='این کارت ثبت نشده';T.noteC='e'}else if(r.acc===T.me.id){T.note='این کارت خودت است';T.noteC='e'}
+    else{T.target=r;T.state='transfer_form';T.note=''}tRender()}
+  else{T.note='اول کار فعلی را تمام کن یا خارج شو';T.noteC='e';tRender()}
+ }catch(e){T.note=fa(e);T.noteC='e';tRender()}}
+async function tRegister(){try{await api('/api/register',{method:'POST',term:true,body:{uid:T.uid,name:$('rn').value,pin:$('rp').value}});
+  tReset('ثبت شد ✅ دوباره کارت را بزن تا وارد شوی');T.noteC='s';tRender()}catch(e){T.note=fa(e);T.noteC='e';tRender()}}
+async function tLogin(){try{const r=await api('/api/login',{method:'POST',term:true,body:{uid:T.uid,pin:$('pin').value}});T.token=r.token;await tLoadMe();T.state='menu';T.note='';tKeep();tRender()}
+  catch(e){const lock=e.message==='locked';T.note=fa(e);T.noteC='e';if(lock)T.state='idle';tRender()}}
+async function tLoadMe(){T.me=await api('/api/me',{token:T.token})}
+async function tTransfer(){try{await api('/api/transfer',{method:'POST',token:T.token,body:{to:T.target.acc,amount:+$('am').value,pin:$('tp').value}});
+  await tLoadMe();T.state='menu';T.note='انتقال انجام شد ✅';T.noteC='s';tKeep();tRender()}catch(e){T.note=fa(e);T.noteC='e';if(e.message==='locked'||e.message==='auth')return tReset(fa(e));tRender()}}
+async function tLogout(){try{await api('/api/logout',{method:'POST',token:T.token})}catch(e){}tReset()}
+tRender();
+// ---------- کارت‌خوان (Web Serial: بلوتوث HC-05 یا USB) ----------
+async function connectReader(){const s=$('rstat');
+ if(!('serial' in navigator)){s.textContent='این مرورگر Web Serial ندارد. از Chrome یا Edge روی کامپیوتر استفاده کن.';return}
+ try{const port=await navigator.serial.requestPort({allowedBluetoothServiceClassIds:['00001101-0000-1000-8000-00805f9b34fb']});
+  await port.open({baudRate:9600});s.textContent='✅ متصل شد؛ کارت را بزن';
+  const rd=port.readable.pipeThrough(new TextDecoderStream()).getReader();let buf='';
+  while(true){const {value,done}=await rd.read();if(done)break;buf+=value;let i;
+   while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i).trim();buf=buf.slice(i+1);if(line.startsWith('UID:'))onUid(line.slice(4))}}
+  s.textContent='اتصال قطع شد'}catch(e){s.textContent='اتصال نشد: '+e.message}}
+// ============ ورود با شماره حساب ============
+const R={token:null,me:null,note:''};
+async function rRender(){const v=$('rview');let h=R.note?`<div class="msg e">${esc(R.note)}</div>`:'';
+ if(!R.me)h+=`<div class="card"><b>ورود</b><input id="ra" type="number" inputmode="numeric" placeholder="شماره حساب"><input id="rpn" class="pin" type="password" inputmode="numeric" maxlength="4" placeholder="رمز">
+   <button class="b" onclick="rLogin()">ورود</button></div>`;
+ else h+=meHtml(R.me)+`<div class="card"><b>انتقال به شماره‌ی حساب</b><input id="rt" type="number" inputmode="numeric" placeholder="شماره‌ی حساب گیرنده"><input id="rm" type="number" inputmode="numeric" placeholder="مبلغ">
+   <input id="rp2" class="pin" type="password" inputmode="numeric" maxlength="4" placeholder="رمز خودت"><button class="b" onclick="rTransfer()">انتقال</button><button class="b g" onclick="rOut()">خروج</button></div>`;
+ v.innerHTML=h}
+async function rLogin(){try{R.token=(await api('/api/login',{method:'POST',body:{acc:+$('ra').value,pin:$('rpn').value}})).token;R.me=await api('/api/me',{token:R.token});R.note=''}catch(e){R.note=fa(e)}rRender()}
+async function rTransfer(){try{await api('/api/transfer',{method:'POST',token:R.token,body:{to:+$('rt').value,amount:+$('rm').value,pin:$('rp2').value}});R.me=await api('/api/me',{token:R.token});R.note=''}
+ catch(e){R.note=fa(e);if(e.message==='auth'||e.message==='locked'){R.me=null;R.token=null}}rRender()}
+async function rOut(){try{await api('/api/logout',{method:'POST',token:R.token})}catch(e){}R.me=R.token=null;rRender()}
+rRender();
+// ============ جدول ============
+async function bPoll(){try{const b=await api('/api/board');$('bview').innerHTML=b.map((x,i)=>`<div class="tx"><span>${i+1}. ${esc(x.name)} <span class="mut">(#${x.id})</span></span><b>${x.balance}</b></div>`).join('')||'<div class="mut">هنوز حسابی نیست</div>'}catch(e){}}
+// ============ ادمین ============
+const A={token:null,list:[],note:''};
+function aRender(){const v=$('aview');if(!A.token){v.innerHTML=`<div class="card"><b>ورود ادمین</b>${A.note?`<div class="msg e">${esc(A.note)}</div>`:''}<input id="ap" type="password" placeholder="رمز ادمین"><button class="b" onclick="aLogin()">ورود</button></div>`;return}
+ const sel=$('aa')?.value;v.innerHTML=`<div class="card"><b>🛡️ ادمین</b><div id="am2"></div>
+  <select id="aa">${A.list.map(a=>`<option value="${a.id}">#${a.id} ${esc(a.name)} — ${a.balance}${a.fails>=3?' 🔒':''}</option>`).join('')}</select>
+  <input id="av" type="number" placeholder="مقدار (یا رمز ۴ رقمی برای «رمز جدید»)">
+  <button class="b" onclick="aCmd('add',1)">➕ اضافه</button><button class="b" onclick="aCmd('add',-1)">➖ کم</button><button class="b" onclick="aCmd('set')">تعیین موجودی</button>
+  <button class="b g" onclick="aCmd('unlock')">🔓 باز کردن قفل</button><button class="b g" onclick="aCmd('pin')">رمز جدید</button>
+  <button class="b r" onclick="if(confirm('حذف این حساب؟'))aCmd('delete')">🗑 حذف</button><button class="b r" onclick="if(confirm('کل بانک پاک شود؟'))aCmd('reset')">♻️ ریست کل</button></div>`;
+ if(sel&&$('aa'))$('aa').value=sel}
+async function aLogin(){try{A.token=(await api('/api/admin/login',{method:'POST',body:{pass:$('ap').value}})).token;A.note='';await aPoll()}catch(e){A.note=fa(e)}aRender()}
+async function aPoll(){if(!A.token)return;try{A.list=await api('/api/admin/accounts',{token:A.token})}catch(e){A.token=null}if(document.activeElement?.id!=='av')aRender()}
+async function aCmd(op,sign=1){const raw=$('av').value;const body={op,acc:+$('aa').value||0};
+ if(op==='pin')body.val=raw;else if(op==='add'||op==='set')body.val=(+raw||0)*sign;
+ try{await api('/api/admin/cmd',{method:'POST',token:A.token,body});await aPoll();$('am2').innerHTML='<div class="msg s">انجام شد ✅</div>'}catch(e){$('am2').innerHTML=`<div class="msg e">${esc(fa(e))}</div>`}}
+aRender();
+// ---------- به‌روزرسانی دوره‌ای (PythonAnywhere وب‌سوکت ندارد، پس هر ۳ ثانیه می‌پرسیم) ----------
+function poll(){if(tab==='board')bPoll();if(tab==='admin')aPoll()}
+setInterval(poll,3000);
+</script></body></html>
